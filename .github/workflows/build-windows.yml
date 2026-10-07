@@ -1,0 +1,92 @@
+name: Build Windows NPU package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-npu.txt pyinstaller
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check OpenVINO model loading
+        shell: pwsh
+        run: |
+          python -c "import openvino as ov; from engine import model_bytes; core = ov.Core(); [core.read_model(model=model_bytes(name)) for name in ('head_yolox.onnx', 'plate_yolov9.onnx')]; print('OpenVINO:', ov.__version__, 'Devices:', core.available_devices)"
+
+      - name: Build application
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm --clean --windowed --onedir `
+            --name BlackboxMask `
+            --add-data "models;models" `
+            --add-data "licenses;licenses" `
+            --collect-all openvino `
+            --collect-all onnxruntime `
+            --collect-all av `
+            --collect-all cv2 `
+            launch.py
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller build failed"
+          }
+
+      - name: Add documentation and create ZIP
+        shell: pwsh
+        run: |
+          Copy-Item README_KO.txt,NPU_README_KO.txt,THIRD_PARTY_NOTICES.md,VALIDATION.txt,NPU_VALIDATION.txt dist/BlackboxMask/
+
+          @'
+          Windows x64 portable NPU package
+
+          Extract the entire folder and run BlackboxMask.exe.
+          Python installation and Install_NPU.cmd are not needed.
+          Keep _internal beside the executable.
+          Intel NPU requires a compatible installed Intel AI Boost driver.
+          Select Intel NPU only mode and analyze a short video to verify hardware support.
+          The GitHub build runner has no Intel NPU; hardware inference is not tested here.
+          Startup errors: %LOCALAPPDATA%\BlackboxMask\startup.log
+          '@ | Set-Content -Encoding utf8 dist/BlackboxMask/START_HERE.txt
+
+          python -m pip freeze | Set-Content -Encoding utf8 dist/BlackboxMask/BUILD_DEPENDENCIES.txt
+          "Source commit: $env:GITHUB_SHA" | Set-Content -Encoding utf8 dist/BlackboxMask/BUILD_SOURCE.txt
+
+          Compress-Archive `
+            -Path dist/BlackboxMask `
+            -DestinationPath BlackboxMask-Windows-x64-NPU.zip
+
+          Get-FileHash BlackboxMask-Windows-x64-NPU.zip -Algorithm SHA256 |
+            Select-Object Algorithm,Hash |
+            Format-List |
+            Out-File -Encoding utf8 BlackboxMask-Windows-x64-NPU.sha256.txt
+
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlackboxMask-Windows-x64-NPU
+          path: |
+            BlackboxMask-Windows-x64-NPU.zip
+            BlackboxMask-Windows-x64-NPU.sha256.txt
+          retention-days: 14
+          if-no-files-found: error

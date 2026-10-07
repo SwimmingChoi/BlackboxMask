@@ -1,0 +1,18 @@
+2026-10-07 Intel NPU source update
+
+Executed here:
+- Python syntax compilation: app.py, engine.py, inference.py, tools/diagnose.py.
+- 7 dependency-free mocked backend tests: NPU dispatch and shape reuse,
+  missing device (auto/strict), compile failure (auto/strict), inference failure,
+  missing OpenVINO (auto/strict).
+
+Not executed here:
+- Real OpenVINO model loading, NPU compilation or NPU inference.
+- Existing video/GUI regression tests: Linux Python lacks av, numpy, cv2,
+  onnxruntime and PySide6; package download failed due to DNS restrictions.
+- Windows installer, packaged application, performance and accuracy comparison.
+
+Windows execution via WSL failed with UtilBindVsockAnyPort: socket failed 1.
+Installed Windows Intel NPU driver files were found; user confirmed Intel AI Boost.
+Use Install_NPU.cmd then Diagnose.cmd on Windows to validate actual model support.
+The pre-existing VALIDATION.txt records apply to the original release, not this change.

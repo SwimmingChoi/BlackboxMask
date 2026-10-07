@@ -1,0 +1,15 @@
+runtime/
+BlackboxMask.exe
+BUILD_MANIFEST.json
+npu-wheels/
+.build-venv/
+dist/
+__pycache__/
+*.pyc
+*.zip
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.maskproj.json
+*.mask-report.json

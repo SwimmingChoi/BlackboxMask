@@ -117,6 +117,9 @@ class Detectors:
         self.face = model_session("head_yolox.onnx", backend) if settings.get("faces", True) else None
         self.plate = model_session("plate_yolov9.onnx", backend) if settings.get("plates", True) else None
         self.grids = {}
+        self.audit_reference = None
+        self.audit_frames = 0
+        self.audit_log = []
 
     def status(self):
         return {kind: session.status() if hasattr(session, "status") else {"device":"CPU", "fallback_reason":""}
@@ -188,6 +191,28 @@ class Detectors:
         return found
 
     def detect(self, image):
+        found = self._detect_impl(image)
+        self.audit_frames += 1
+        npu_active=any(hasattr(s,'status') and s.status()['device']=='Intel NPU' for s in (self.face,self.plate) if s is not None)
+        if npu_active and self.settings.get('verify_npu',True):
+            if self.audit_frames <= 3 or self.audit_frames % 60 == 0:
+                if self.audit_reference is None:
+                    self.audit_reference = Detectors(dict(self.settings,backend='cpu',verify_npu=False))
+                reference = self.audit_reference._detect_impl(image)
+                from detection_checks import compare_boxes
+                for kind,attr in (('face','face'),('plate','plate')):
+                    session=getattr(self,attr)
+                    if session is None or not hasattr(session,'status') or session.status()['device']!='Intel NPU':continue
+                    cpu_boxes=[x for x in reference if x['kind']==kind]
+                    comparison=compare_boxes(cpu_boxes,[x for x in found if x['kind']==kind])
+                    if comparison['agreement']<.5:
+                        reason=f"NPU/CPU 탐지 불일치 ({kind}, 프레임 {self.audit_frames}): CPU {comparison['reference_count']}개 / NPU {comparison['candidate_count']}개 / 일치 {comparison['agreement']:.0%}"
+                        self.audit_log.append(dict(comparison,kind=kind,frame=self.audit_frames))
+                        session._fallback(RuntimeError(reason))
+                        found=[x for x in found if x['kind']!=kind]+cpu_boxes
+        return found
+
+    def _detect_impl(self, image):
         found = []
         if self.face is not None:
             found += self._tiled(self._face, image)
@@ -288,7 +313,8 @@ def analyze(path, settings, progress=lambda *a:None, cancel=None, detector=None)
     digest = sha256(path,cancel)
     return {"schema":1,"version":VERSION,"source":path,"sha256":digest,"meta":meta,
             "settings":settings,"frames":frames,"manual":[],"excluded":[],
-            "inference":detector.status() if hasattr(detector,"status") else {}}
+            "inference":detector.status() if hasattr(detector,"status") else {},
+            "inference_checks":getattr(detector,'audit_log',[])}
 
 
 def manual_box(item, t):
@@ -447,7 +473,7 @@ def export_video(project,destination,options,progress=lambda *a:None,cancel=None
         check_cancel(cancel)
         os.replace(tmp,destination)
         report={"app":VERSION,"source_sha256":project["sha256"],"output_sha256":sha256(destination),
-                "frames":count,"options":options,"inference":project.get("inference",{}),"excluded_track_ids":project["excluded"],
+                "frames":count,"options":options,"inference":project.get("inference",{}),"inference_checks":project.get("inference_checks",[]),"excluded_track_ids":project["excluded"],
                 "manual_regions":len(project["manual"]),"reviewed":bool(options.get("reviewed")),
                 "note":"자동 탐지 결과는 무누락을 보장하지 않습니다. 음성·화면 내 문자 검토는 별도입니다."}
         log=destination.with_suffix(".mask-report.json")

@@ -172,6 +172,7 @@ class Window(QMainWindow):
         self.toolbar=QWidget();bar=QHBoxLayout(self.toolbar);bar.setContentsMargins(0,0,0,0)
         bar.addWidget(button("＋ 영상 추가",self.add_files));bar.addWidget(button("프로젝트 열기",self.open_project))
         self.save_btn=button("프로젝트 저장",self.save_current);bar.addWidget(self.save_btn);bar.addStretch()
+        self.diagnose_btn=button("CPU / NPU 비교",self.run_diagnosis);bar.addWidget(self.diagnose_btn)
         self.analyze_btn=button("1. 선택 영상 분석",self.run_analysis,True);bar.addWidget(self.analyze_btn)
         self.batch_btn=button("전체 자동 처리",self.run_batch);bar.addWidget(self.batch_btn);layout.addWidget(self.toolbar)
         split=QSplitter(Qt.Horizontal);layout.addWidget(split,1)
@@ -227,6 +228,7 @@ class Window(QMainWindow):
         ready=self.project is not None and not self.busy
         self.toolbar.setEnabled(not self.busy);self.files.setEnabled(not self.busy);self.sidebar.setEnabled(not self.busy)
         self.analyze_btn.setEnabled(bool(self.active_path) and not self.busy)
+        self.diagnose_btn.setEnabled(self.raw is not None and not self.busy)
         self.batch_btn.setEnabled(bool(self.queue) and not self.busy)
         for w in (self.save_btn,self.export_btn,self.remove_btn,self.original,self.slider,self.prev,self.next,self.play,
                   self.start,self.end,self.edit_key):w.setEnabled(ready)
@@ -282,6 +284,25 @@ class Window(QMainWindow):
         self.update_enabled()
 
     def settings(self):return {"faces":self.faces.isChecked(),"plates":self.plates.isChecked(),"detail":self.detail.isChecked(),"backend":["auto","cpu","npu"][self.backend.currentIndex()]}
+
+    def run_diagnosis(self):
+        if self.raw is None:return
+        from npu_diagnostics import diagnose_image
+        image=self.raw.copy();settings=self.settings()
+        def done(report):
+            path,_=QFileDialog.getSaveFileName(self,"CPU / NPU 비교 보고서 저장","npu-comparison.json","JSON (*.json)")
+            if path:
+                try:Path(path).write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+                except Exception as error:self.error(str(error));return
+            lines=[]
+            for backend,run in report['runs'].items():
+                if 'error' in run:lines.append(f"{backend}: {run['error']}")
+                else:lines.append(f"{backend}: 머리 {sum(x['kind']=='face' for x in run['boxes'])}개 / 번호판 {sum(x['kind']=='plate' for x in run['boxes'])}개")
+            for backend,kinds in report['comparisons'].items():
+                lines.append(f"{backend} CPU 일치율: "+' / '.join(f"{k} {v['agreement']:.0%}" for k,v in kinds.items()))
+            self.status.setText("CPU / NPU 비교 완료")
+            QMessageBox.information(self,"CPU / NPU 비교",'\n'.join(lines))
+        self.work(lambda progress,cancel:diagnose_image(image,settings,progress,cancel),done)
     def options(self):return {"style":["blur","mosaic","solid"][self.style.currentIndex()],"margin":self.margin.value()/100,
                               "audio":self.audio.isChecked(),"watermark":self.watermark.isChecked(),"reviewed":self.reviewed.isChecked()}
 

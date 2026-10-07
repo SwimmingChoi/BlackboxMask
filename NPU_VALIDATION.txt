@@ -1,5 +1,16 @@
 2026-10-07 Intel NPU source update
 
+Subsequent accuracy investigation:
+- Parsed actual ONNX protobuf structure: each model has one float32 output.
+  Output ordering cannot explain this report of wrong regions.
+- Added same-frame ORT CPU / OpenVINO FP32 CPU / NPU diagnostics in the GUI.
+  Report includes input hashes, output shapes/ranges, raw numerical differences,
+  detection boxes, agreement and device/driver metadata.
+- Added sampled CPU comparison with model-specific fallback / strict abort.
+- 8 geometry/guard tests plus 7 backend tests passed locally.
+- Real inference remains unexecuted here: Windows interop still fails and
+  Linux lacks dependencies; NPU accuracy regression root cause is NOT confirmed.
+
 Executed here:
 - Python syntax compilation: app.py, engine.py, inference.py, tools/diagnose.py.
 - 7 dependency-free mocked backend tests: NPU dispatch and shape reuse,

@@ -8,11 +8,12 @@ from fractions import Fraction
 from types import SimpleNamespace
 
 import av
+import cv2
 import numpy as np
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from engine import (analyze,export_video,sha256,apply_masks,manual_box,effective_boxes,
-                    save_project,load_project,Tracker,Cancelled,Detectors,read_preview)
+                    save_project,load_project,Tracker,Cancelled,Detectors,read_preview,thumbnails)
 
 
 class FakeDetector:
@@ -118,6 +119,13 @@ class EngineTests(unittest.TestCase):
     def test_preview_matches_time(self):
         with av.open(str(self.source)) as c:frames=[f.to_ndarray(format='bgr24') for f in c.decode(video=0)]
         for i in [0,3,9]:self.assertTrue(np.array_equal(read_preview(self.project,i),frames[i]))
+
+    def test_thumbnails_cover_every_frame(self):
+        thumbs=dict(thumbnails(self.project,height=48))
+        self.assertEqual(sorted(thumbs),list(range(10)))
+        image=cv2.imdecode(np.frombuffer(thumbs[0],np.uint8),cv2.IMREAD_COLOR)
+        self.assertEqual(image.shape[:2],(48,80))
+        with self.assertRaises(Cancelled):list(thumbnails(self.project,cancel=lambda:True))
 
     def test_head_decode_scale_class_and_nms(self):
         # 2560x1280 원본 → 1280x640 입력. stride 16 격자의 (열 10, 행 5) 칸에 머리 하나

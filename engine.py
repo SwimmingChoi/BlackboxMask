@@ -375,6 +375,25 @@ def read_preview(project,index):
     raise ValueError("미리보기 프레임을 읽지 못했습니다.")
 
 
+def thumbnails(project, height=54, cancel=None):
+    """Decode the source once at thumbnail size and yield (frame index, JPEG bytes) in decode order."""
+    meta = project["meta"]; rotation = meta.get("rotation", 0)
+    index = {f["pts"]:n for n,f in enumerate(project["frames"])}
+    scale = height/meta["height"]
+    with av.open(project["source"]) as src:
+        stream = src.streams.video[0]; stream.thread_type = "AUTO"
+        # 회전 영상은 코딩 해상도 기준으로 축소한 뒤 표시 방향으로 돌린다.
+        size = {"width":max(2,round(stream.width*scale)), "height":max(2,round(stream.height*scale))}
+        for frame in src.decode(stream):
+            check_cancel(cancel)
+            n = index.get(frame.pts)
+            if n is None: continue
+            image = frame.to_ndarray(format="bgr24", **size)
+            if rotation: image = np.ascontiguousarray(np.rot90(image, rotation//90))
+            ok, data = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if ok: yield n, data.tobytes()
+
+
 def save_project(project,path):
     path = Path(path)
     fd,tmp = tempfile.mkstemp(dir=path.parent,suffix=".tmp")

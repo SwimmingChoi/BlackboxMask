@@ -11,14 +11,14 @@ from pathlib import Path
 import av
 import cv2
 from PySide6.QtCore import Qt, Signal, QThread, QTimer, QRectF, QPointF
-from PySide6.QtGui import QImage, QPainter, QColor, QPen, QFont, QPalette
+from PySide6.QtGui import QImage, QPainter, QColor, QPen, QFont, QPalette, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QMessageBox, QListWidget, QListWidgetItem,
-    QCheckBox, QComboBox, QDoubleSpinBox, QSlider, QProgressBar, QGroupBox, QFormLayout,
+    QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox, QSlider, QProgressBar, QGroupBox, QFormLayout,
     QSplitter, QAbstractItemView, QScrollArea, QStyle)
 
 from engine import (VERSION, analyze, apply_masks, effective_boxes, read_preview, frame_image,
-                    save_project, load_project, export_video, Cancelled, hms)
+                    save_project, load_project, export_video, Cancelled, hms, thumbnails)
 
 STYLE = """
 /* 한화 디자인 토큰(hw-translator.html) 기반 — navy #1A2B4A / orange #F37321 / 라이트 서피스 */
@@ -38,15 +38,19 @@ QPushButton#primary {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #F373
 QPushButton#primary:hover {background:#E06A1B;}
 QPushButton#primary:pressed {background:#C75E14;}
 QPushButton#primary:disabled {background:#FDEEDE;color:#94A3B8;}
+QPushButton#step {background:#1A2B4A;color:#FFFFFF;border:0;font-size:15px;font-weight:700;min-height:30px;min-width:120px;padding:8px 16px;}
+QPushButton#step:hover {background:#2A3F66;}
+QPushButton#step:pressed {background:#0F1B30;}
+QPushButton#step:disabled {background:#EEF2F7;color:#94A3B8;}
 QListWidget {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:4px;}
 QListWidget::item {padding:7px;border-radius:6px;}
 QListWidget::item:hover {background:#F7F9FC;}
 QListWidget::item:selected {background:#FFF3EB;color:#C75E14;}
 QGroupBox {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:16px;margin-top:14px;padding:18px 12px 10px;}
 QGroupBox::title {subcontrol-origin:margin;left:14px;padding:0 4px;color:#1A2B4A;font-weight:700;}
-QComboBox,QDoubleSpinBox {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;padding:5px 8px;}
-QComboBox:hover,QDoubleSpinBox:hover {border-color:#CBD5E0;}
-QComboBox:focus,QDoubleSpinBox:focus {border-color:#F37321;}
+QComboBox,QDoubleSpinBox,QSpinBox {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:8px;padding:5px 8px;}
+QComboBox:hover,QDoubleSpinBox:hover,QSpinBox:hover {border-color:#CBD5E0;}
+QComboBox:focus,QDoubleSpinBox:focus,QSpinBox:focus {border-color:#F37321;}
 QComboBox QAbstractItemView {background:#FFFFFF;border:1px solid #E2E8F0;selection-background-color:#FFF3EB;selection-color:#C75E14;}
 QCheckBox {spacing:7px;padding:3px;}
 QCheckBox::indicator {width:16px;height:16px;border:1px solid #CBD5E0;border-radius:4px;background:#FFFFFF;}
@@ -134,6 +138,112 @@ class SeekSlider(QSlider):
         super().mousePressEvent(event)
 
 
+class Filmstrip(QWidget):
+    """프레임별 썸네일 띠. 클릭=해당 프레임으로 이동, 드래그/Shift+클릭=수동 영역 프레임 구간 선택."""
+    clicked = Signal(int)
+    selected = Signal(int, int)
+    THUMB_H = 54; GAP = 3; TOP = 16; BAR = 5
+
+    def __init__(self):
+        super().__init__()
+        self.project=None; self.thumbs=[]; self.cache={}; self.current=0; self.range=(0,0)
+        self.anchor=None; self.dragging=False; self.cell_w=96
+        self.setFixedHeight(self.TOP+self.THUMB_H+self.BAR+8); self.setMouseTracking(True)
+
+    def set_project(self,project,thumbs):
+        self.project=project; self.thumbs=thumbs; self.cache.clear()
+        if project:
+            meta=project["meta"]; self.cell_w=max(24,round(self.THUMB_H*meta["width"]/meta["height"]))+self.GAP
+            self.setFixedWidth(self.cell_w*len(project["frames"])+self.GAP)
+        else:self.setFixedWidth(0)
+        self.update()
+
+    def thumbs_ready(self,first,last):
+        x=self.GAP+first*self.cell_w; self.update(x,0,(last-first+1)*self.cell_w,self.height())
+
+    def set_current(self,index):
+        old=self.current; self.current=index
+        for i in (old,index):self.update(self.GAP+i*self.cell_w-2,0,self.cell_w+4,self.height())
+
+    def set_range(self,first,last):
+        self.range=(first,last); self.update()
+
+    def index_at(self,x):
+        return max(0,min(len(self.project["frames"])-1,int((x-self.GAP)//self.cell_w)))
+
+    def image(self,i):
+        if i not in self.cache:
+            if i>=len(self.thumbs) or self.thumbs[i] is None:return None
+            if len(self.cache)>600:self.cache.clear()
+            self.cache[i]=QImage.fromData(self.thumbs[i],"JPG")
+        return self.cache[i]
+
+    def paintEvent(self,event):
+        p=QPainter(self); p.fillRect(event.rect(),QColor("#1A2B4A"))
+        if not self.project:return
+        frames=self.project["frames"]; origin=self.project["meta"]["origin"]
+        first=self.index_at(event.rect().left()); last=self.index_at(event.rect().right())
+        tw=self.cell_w-self.GAP; small=QFont(p.font()); small.setPointSize(8); p.setFont(small)
+        for i in range(first,last+1):
+            x=self.GAP+i*self.cell_w; r=QRectF(x,self.TOP,tw,self.THUMB_H)
+            img=self.image(i)
+            if img is None:
+                p.fillRect(r,QColor("#2A3F66")); p.setPen(QColor("#64748B")); p.drawText(r,Qt.AlignCenter,"…")
+            else:p.drawImage(r,img)
+            if self.range[0]<=i<=self.range[1]:p.fillRect(r,QColor(243,115,33,70))
+            # 아래 막대: 주황=자동 탐지 마스킹, 파랑=수동 영역 적용
+            t=frames[i]["time"]-origin; bar_y=self.TOP+self.THUMB_H+2
+            if any(b["id"] not in self.project["excluded"] for b in frames[i]["boxes"]):
+                p.fillRect(QRectF(x,bar_y,tw/2,self.BAR),QColor("#F37321"))
+            if any(m["start"]<=t<=m["end"] for m in self.project["manual"]):
+                p.fillRect(QRectF(x+tw/2,bar_y,tw/2,self.BAR),QColor("#60A5FA"))
+            p.setPen(QColor("#FFFFFF") if i==self.current else QColor("#94A3B8"))
+            p.drawText(QRectF(x,0,tw,self.TOP),Qt.AlignLeft|Qt.AlignVCenter,f"{i+1}" if i%5==0 or i==self.current else "")
+        lo,hi=self.range
+        if lo<=last and hi>=first:
+            p.setPen(QPen(QColor("#F37321"),2))
+            p.drawRect(QRectF(self.GAP+lo*self.cell_w-1,self.TOP-1,(hi-lo+1)*self.cell_w-self.GAP+2,self.THUMB_H+2))
+        if first<=self.current<=last:
+            p.setPen(QPen(QColor("#FFFFFF"),3))
+            p.drawRect(QRectF(self.GAP+self.current*self.cell_w-1.5,self.TOP-1.5,tw+3,self.THUMB_H+3))
+
+    def mousePressEvent(self,event):
+        if not self.project or event.button()!=Qt.LeftButton:return
+        i=self.index_at(event.position().x())
+        if event.modifiers()&Qt.ShiftModifier:
+            self.selected.emit(min(self.current,i),max(self.current,i));return
+        self.anchor=i; self.dragging=False; self.clicked.emit(i)
+
+    def mouseMoveEvent(self,event):
+        if self.anchor is None or not self.project:return
+        i=self.index_at(event.position().x())
+        if i!=self.anchor or self.dragging:
+            self.dragging=True; self.selected.emit(min(self.anchor,i),max(self.anchor,i))
+
+    def mouseReleaseEvent(self,event):self.anchor=None; self.dragging=False
+
+
+class FilmstripArea(QScrollArea):
+    """세로 휠을 가로 스크롤로 바꾼다."""
+    def wheelEvent(self,event):
+        bar=self.horizontalScrollBar(); delta=event.angleDelta().y() or event.angleDelta().x()
+        bar.setValue(bar.value()-delta); event.accept()
+
+
+class ThumbWorker(QThread):
+    ready=Signal(str,int,int)
+    def __init__(self,project,store):
+        super().__init__(); self.project=project; self.store=store; self.cancel=threading.Event()
+    def run(self):
+        source=self.project["source"]; pending=[]
+        try:
+            for n,data in thumbnails(self.project,Filmstrip.THUMB_H,self.cancel.is_set):
+                self.store[n]=data; pending.append(n)
+                if len(pending)>=24:self.ready.emit(source,min(pending),max(pending)); pending=[]
+        except Exception:pass  # 썸네일은 보조 기능이므로 실패해도 편집은 계속할 수 있다.
+        if pending:self.ready.emit(source,min(pending),max(pending))
+
+
 class Worker(QThread):
     progress=Signal(int,str)
     result=Signal(object)
@@ -160,7 +270,7 @@ class Window(QMainWindow):
         self.setWindowTitle(f"Blackbox Mask · {VERSION} 미리보기")
         self.resize(1460,900)
         self.project=None;self.raw=None;self.index=0;self.worker=None;self.busy=False;self.dirty=False
-        self.queue=[];self.projects={};self.active_path=None;self.batch_results=[]
+        self.queue=[];self.projects={};self.active_path=None;self.batch_results=[];self.thumbs={};self.thumb_worker=None;self.thumb_workers=set()
         self.timer=QTimer(self);self.timer.timeout.connect(self.advance)
         root=QWidget();self.setCentralWidget(root);outer=QVBoxLayout(root);outer.setContentsMargins(0,0,0,0);outer.setSpacing(0)
         nav=QWidget();nav.setObjectName("nav");nav.setFixedHeight(64);top=QHBoxLayout(nav);top.setContentsMargins(22,0,22,0);top.setSpacing(12)
@@ -183,11 +293,22 @@ class Window(QMainWindow):
         for title,canvas in [("원본 · 드래그하여 수동 영역 추가",self.original),("처리 미리보기",self.output)]:
             box=QVBoxLayout();label=QLabel(title);label.setObjectName("muted");box.addWidget(label);box.addWidget(canvas,1);views.addLayout(box,1)
         lv.addLayout(views,1)
-        play=QHBoxLayout();self.prev=button("◀",lambda:self.goto(self.index-1));play.addWidget(self.prev)
-        self.play=button("재생",self.toggle_play);play.addWidget(self.play);self.next=button("▶",lambda:self.goto(self.index+1));play.addWidget(self.next)
+        play=QHBoxLayout();self.prev=button("◀  이전 프레임",lambda:self.step(-1));self.prev.setObjectName("step");play.addWidget(self.prev)
+        self.play=button("재생",self.toggle_play);play.addWidget(self.play)
+        self.next=button("다음 프레임  ▶",lambda:self.step(1));self.next.setObjectName("step");play.addWidget(self.next)
+        self.prev.setToolTip("한 프레임 뒤로 (← 키, Shift+← 10프레임)");self.next.setToolTip("한 프레임 앞으로 (→ 키, Shift+→ 10프레임)")
+        for key,delta in [(Qt.Key_Left,-1),(Qt.Key_Right,1),(Qt.SHIFT|Qt.Key_Left,-10),(Qt.SHIFT|Qt.Key_Right,10)]:
+            QShortcut(QKeySequence(key),self,lambda d=delta:self.step(d))
         self.slider=SeekSlider(Qt.Horizontal);self.slider.valueChanged.connect(self.goto);play.addWidget(self.slider,1)
         self.slider.sliderPressed.connect(self.scrub_start);self.slider.sliderReleased.connect(self.scrub_end)
         self.time_label=QLabel("분석 후 프레임 이동 가능");play.addWidget(self.time_label);lv.addLayout(play)
+        self.strip=Filmstrip();self.strip.clicked.connect(self.strip_clicked);self.strip.selected.connect(self.strip_selected)
+        self.strip_area=FilmstripArea();self.strip_area.setWidget(self.strip);self.strip_area.setWidgetResizable(False)
+        self.strip_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff);self.strip_area.setFixedHeight(self.strip.height()+14)
+        self.strip_area.setStyleSheet("QScrollArea{background:#1A2B4A;border-radius:8px;}")
+        lv.addWidget(self.strip_area)
+        strip_hint=QLabel("프레임 클릭: 이동 · 드래그 또는 Shift+클릭: 수동 영역 구간 선택 · 막대 주황=자동 마스킹, 파랑=수동 영역")
+        strip_hint.setObjectName("muted");lv.addWidget(strip_hint)
         hint=QLabel("자동 탐지는 누락될 수 있습니다. 제출 전에 전체 영상을 확인하고 필요한 영역을 추가하세요.")
         hint.setWordWrap(True);hint.setObjectName("muted");lv.addWidget(hint);split.addWidget(left)
         self.sidebar=QWidget();rv=QVBoxLayout(self.sidebar);rv.setContentsMargins(12,0,0,0);rv.setSpacing(10)
@@ -201,12 +322,15 @@ class Window(QMainWindow):
         mask=QGroupBox("마스킹 설정");form=QFormLayout(mask)
         self.style=QComboBox();self.style.addItems(["블러","모자이크","불투명 가리기"]);self.style.currentIndexChanged.connect(self.options_changed);form.addRow("처리 방식",self.style)
         self.margin=QDoubleSpinBox();self.margin.setRange(0,100);self.margin.setValue(18);self.margin.setSuffix(" %");self.margin.valueChanged.connect(self.options_changed);form.addRow("영역 여유 폭",self.margin);rv.addWidget(mask)
-        manual=QGroupBox("수동 영역 · 시간 구간");mv=QVBoxLayout(manual);times=QFormLayout()
-        self.start=QDoubleSpinBox();self.end=QDoubleSpinBox()
-        for spin in (self.start,self.end):spin.setRange(0,999999);spin.setDecimals(3);spin.setSuffix(" 초")
-        times.addRow("시작",self.start);times.addRow("끝",self.end);mv.addLayout(times)
+        manual=QGroupBox("수동 영역 · 프레임 구간");mv=QVBoxLayout(manual);times=QFormLayout()
+        self.start=QSpinBox();self.end=QSpinBox();self.start_set=button("현재 프레임",lambda:self.start.setValue(self.index+1))
+        self.end_set=button("현재 프레임",lambda:self.end.setValue(self.index+1))
+        for label,spin,set_btn in [("시작",self.start,self.start_set),("끝",self.end,self.end_set)]:
+            spin.setRange(1,1);spin.setPrefix("프레임 ");spin.valueChanged.connect(self.update_range_label)
+            row=QHBoxLayout();row.addWidget(spin,1);row.addWidget(set_btn);times.addRow(label,row)
+        mv.addLayout(times);self.range_label=QLabel("");self.range_label.setObjectName("muted");mv.addWidget(self.range_label)
         self.edit_key=QCheckBox("선택한 수동 영역에 현재 위치 추가");mv.addWidget(self.edit_key)
-        hint=QLabel("다른 시점에서 같은 영역의 위치를 추가하면 사이 구간을 직선으로 연결합니다.")
+        hint=QLabel("영상을 프레임 단위로 넘기며 '현재 프레임'으로 시작·끝을 지정하세요. 다른 프레임에서 같은 영역의 위치를 추가하면 사이 구간을 직선으로 연결합니다.")
         hint.setWordWrap(True);hint.setObjectName("muted");mv.addWidget(hint);rv.addWidget(manual)
         rv.addWidget(QLabel("현재 프레임의 대상 / 수동 영역"));self.tracks=QListWidget();self.tracks.setMinimumHeight(115);rv.addWidget(self.tracks,1)
         self.remove_btn=button("선택 대상 제외 / 복원 · 수동 영역 삭제",self.remove_region);rv.addWidget(self.remove_btn)
@@ -231,7 +355,7 @@ class Window(QMainWindow):
         self.diagnose_btn.setEnabled(self.raw is not None and not self.busy)
         self.batch_btn.setEnabled(bool(self.queue) and not self.busy)
         for w in (self.save_btn,self.export_btn,self.remove_btn,self.original,self.slider,self.prev,self.next,self.play,
-                  self.start,self.end,self.edit_key):w.setEnabled(ready)
+                  self.start,self.end,self.start_set,self.end_set,self.edit_key,self.strip):w.setEnabled(ready)
         self.cancel_btn.setEnabled(self.busy)
 
     def set_progress(self,n,text):self.progress.setValue(n);self.status.setText(text)
@@ -272,7 +396,8 @@ class Window(QMainWindow):
         if row<0 or row>=len(self.queue) or self.busy:return
         if self.project:self.projects[self.project["source"]]=self.project
         self.timer.stop();self.play.setText("재생");self.active_path=self.queue[row]
-        self.project=self.projects.get(self.active_path);self.index=0;self.raw=None;self.tracks.clear();self.reviewed.setChecked(False)
+        self.project=self.projects.get(self.active_path);self.index=0;self.raw=None;self.tracks.clear();self.reviewed.setChecked(False);self.update_range_label()
+        if not self.project:self.strip.set_project(None,[])
         try:
             if self.project:self.install_project(self.project)
             else:
@@ -315,7 +440,10 @@ class Window(QMainWindow):
 
     def install_project(self,project):
         self.project=project;self.active_path=project["source"];self.projects[self.active_path]=project
-        self.index=0;self.start.setValue(0);self.end.setValue(project["meta"]["duration"])
+        self.index=0;last=len(project["frames"])
+        for spin in (self.start,self.end):spin.setRange(1,last)
+        self.start.setValue(1);self.end.setValue(last);self.update_range_label()
+        self.load_thumbnails(project)
         self.slider.blockSignals(True);self.slider.setRange(0,len(project["frames"])-1);self.slider.setValue(0);self.slider.blockSignals(False)
         self.reviewed.setChecked(False);self.progress.setValue(100);self.goto(0,force=True)
         tracks={b['id'] for f in project['frames'] for b in f['boxes']}
@@ -336,6 +464,45 @@ class Window(QMainWindow):
         t=self.project["frames"][index]["time"]-self.project["meta"]["origin"]
         self.time_label.setText(f"{t:.3f}초 · {index+1:,}/{len(self.project['frames']):,}")
         self.render();self.update_tracks()
+        self.strip.set_current(index);self.strip_area.ensureVisible(self.strip.GAP+index*self.strip.cell_w+self.strip.cell_w//2,self.strip.height()//2,self.strip.cell_w*2,0)
+
+    def load_thumbnails(self,project):
+        source=project["source"];store=self.thumbs.get(source)
+        if store is None or len(store)!=len(project["frames"]):store=self.thumbs[source]=[None]*len(project["frames"])
+        self.strip.set_project(project,store)
+        if all(x is not None for x in store):return
+        if self.thumb_worker:
+            if self.thumb_worker.project is project and self.thumb_worker.isRunning():return
+            self.thumb_worker.cancel.set()
+        # 취소한 스레드도 끝날 때까지 참조를 유지해야 실행 중 QThread가 해제되지 않는다.
+        worker=ThumbWorker(project,store);self.thumb_worker=worker;self.thumb_workers.add(worker)
+        def finished():
+            self.thumb_workers.discard(worker)
+            if self.thumb_worker is worker:self.thumb_worker=None
+            worker.deleteLater()
+        worker.ready.connect(self.thumbs_ready);worker.finished.connect(finished);worker.start()
+
+    def thumbs_ready(self,source,first,last):
+        if self.project and self.project["source"]==source:self.strip.thumbs_ready(first,last)
+
+    def strip_clicked(self,index):
+        if self.timer.isActive():self.timer.stop();self.play.setText("재생")
+        self.goto(index)
+
+    def strip_selected(self,first,last):
+        self.start.setValue(first+1);self.end.setValue(last+1)
+
+    def step(self,delta):
+        if not self.project or self.busy:return
+        if self.timer.isActive():self.timer.stop();self.play.setText("재생")
+        self.goto(self.index+delta)
+
+    def frame_time(self,index):return self.project["frames"][index]["time"]-self.project["meta"]["origin"]
+
+    def update_range_label(self,*args):
+        if not self.project:self.range_label.setText("");return
+        a,b=self.start.value()-1,self.end.value()-1;self.strip.set_range(a,b)
+        self.range_label.setText(f"{self.frame_time(a):.3f}초 – {self.frame_time(b):.3f}초 · {max(0,b-a+1):,} 프레임")
 
     def render(self):
         if self.raw is None or not self.project:return
@@ -378,10 +545,11 @@ class Window(QMainWindow):
 
     def add_box(self,box):
         if not self.project or self.busy:return
-        start,end=self.start.value(),self.end.value()
-        if end<start:self.error("끝 시각은 시작 시각보다 뒤여야 합니다.");return
-        t=self.project["frames"][self.index]["time"]-self.project["meta"]["origin"]
-        if not start<=t<=end:self.error("현재 프레임이 적용 시간 구간 안에 있어야 합니다.");return
+        first,last=self.start.value()-1,self.end.value()-1
+        if last<first:self.error("끝 프레임은 시작 프레임보다 뒤여야 합니다.");return
+        if not first<=self.index<=last:self.error("현재 프레임이 적용 프레임 구간 안에 있어야 합니다.");return
+        # 엔진은 시간 기준으로 구간을 판정하므로 프레임 번호를 해당 프레임의 시각으로 바꿔 저장한다.
+        start,end,t=self.frame_time(first),self.frame_time(last),self.frame_time(self.index)
         selected=self.tracks.currentItem();tid=selected.data(Qt.UserRole) if selected else None
         item=None
         if self.edit_key.isChecked():
@@ -392,7 +560,7 @@ class Window(QMainWindow):
             item={"id":tid,"start":start,"end":end,"keys":[]};self.project["manual"].append(item)
         item["start"],item["end"]=start,end
         item["keys"]=[k for k in item["keys"] if abs(k["time"]-t)>1e-6]+[{"time":t,"box":box}]
-        self.dirty=True;self.reviewed.setChecked(False);self.render();self.update_tracks()
+        self.dirty=True;self.reviewed.setChecked(False);self.render();self.update_tracks();self.strip.update()
         for n in range(self.tracks.count()):
             if self.tracks.item(n).data(Qt.UserRole)==tid:self.tracks.setCurrentRow(n)
 
@@ -405,7 +573,7 @@ class Window(QMainWindow):
         else:
             if QMessageBox.question(self,"대상 제외",f"#{tid}의 전체 추적 구간에서 마스킹을 제외할까요?\n추적 대상이 바뀐 구간도 반드시 확인하세요.")!=QMessageBox.Yes:return
             self.project["excluded"].append(tid)
-        self.dirty=True;self.reviewed.setChecked(False);self.render();self.update_tracks()
+        self.dirty=True;self.reviewed.setChecked(False);self.render();self.update_tracks();self.strip.update()
 
     def save_current(self):
         if not self.project:return
@@ -472,6 +640,7 @@ class Window(QMainWindow):
             self.cancel_work();event.ignore();return
         if self.dirty and self.projects:
             if QMessageBox.question(self,"종료","저장하지 않은 편집 내용이 있을 수 있습니다. 종료할까요?")!=QMessageBox.Yes:event.ignore();return
+        for worker in list(self.thumb_workers):worker.cancel.set();worker.wait()
         event.accept()
 
 

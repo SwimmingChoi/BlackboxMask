@@ -18,6 +18,8 @@ commercial redistribution clearance is asserted by this prototype.
 | Microsoft VC runtime | msvc-runtime 14.44.35112 wheel; CPython/Qt runtime DLLs | https://pypi.org/project/msvc-runtime/14.44.35112/ |
 | Head (face) model | yolox_n_body_head_face_handLR_foot_dist_Nx3xHxW.onnx from resources_n.tar.gz, Apache-2.0, Copyright 2024 Katsuya Hyodo | https://github.com/PINTO0309/PINTO_model_zoo/tree/main/445_YOLOX-Body-Head-Face-HandLR-Foot-Dist |
 | License-plate model | yolo-v9-t-640-license-plates-end2end.onnx | https://github.com/ankandrew/open-image-models/releases/tag/assets |
+| Head model S / M (`head_yolox_s.onnx`, `head_yolox_m.onnx`) | yolox_s/m_body_head_face_handLR_foot_dist_Nx3xHxW.onnx from resources_s/m.tar.gz, Apache-2.0, Copyright 2024 Katsuya Hyodo | https://github.com/PINTO0309/PINTO_model_zoo/tree/main/445_YOLOX-Body-Head-Face-HandLR-Foot-Dist |
+| License-plate model S (`plate_yolov9_s.onnx`) | yolo-v9-s-608-license-plates-end2end.onnx | https://github.com/ankandrew/open-image-models/releases/tag/assets |
 
 The head model's Apache-2.0 license and the Open Image Models MIT notice are in `licenses/`.
 The head model file is included unmodified.

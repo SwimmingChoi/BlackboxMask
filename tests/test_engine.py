@@ -2,6 +2,7 @@ import copy
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from fractions import Fraction
 
@@ -67,7 +68,7 @@ class EngineTests(unittest.TestCase):
 
     def test_mask_changes_only_region(self):
         im=np.random.default_rng(1).integers(0,256,(96,160,3),dtype=np.uint8)
-        for style in ['blur','mosaic','solid']:
+        for style in ['blur','blur_light','mosaic','solid']:
             out=apply_masks(im,[{'box':[20,20,60,50]}],style,0)
             self.assertTrue(np.array_equal(out[:20],im[:20]))
             self.assertTrue(np.array_equal(out[:,60:],im[:,60:]))
@@ -119,6 +120,16 @@ class EngineTests(unittest.TestCase):
     def test_preview_matches_time(self):
         with av.open(str(self.source)) as c:frames=[f.to_ndarray(format='bgr24') for f in c.decode(video=0)]
         for i in [0,3,9]:self.assertTrue(np.array_equal(read_preview(self.project,i),frames[i]))
+
+    def test_large_models_never_use_npu(self):
+        import engine
+        used=[]
+        with patch.object(engine,'model_session',lambda name,backend:used.append(backend)):
+            for model in ('accurate','best'):
+                with self.assertRaisesRegex(ValueError,'Intel GPU'):Detectors({'model':model,'backend':'npu'})
+                Detectors({'model':model,'backend':'auto'})
+            Detectors({'model':'fast','backend':'auto'})
+        self.assertEqual(used,['auto_gpu']*4+['auto']*2)
 
     def test_thumbnails_cover_every_frame(self):
         thumbs=dict(thumbnails(self.project,height=48))

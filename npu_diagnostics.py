@@ -1,4 +1,4 @@
-"""Same-frame ORT CPU / OpenVINO FP32 CPU / NPU comparison."""
+"""Same-frame ORT CPU / OpenVINO FP32 CPU / NPU / Intel GPU comparison."""
 import platform
 import hashlib
 import time
@@ -48,12 +48,12 @@ def diagnose_image(image,settings,progress=lambda *a:None,cancel=None):
             try:properties[key]=str(core.get_property(device,key))
             except Exception:pass
         report['devices'][device]=properties
-    for index,backend in enumerate(('ort_cpu','openvino_cpu','npu')):
-        check_cancel(cancel);progress(index*30,f'동일 프레임 비교: {backend}')
+    for index,backend in enumerate(('ort_cpu','openvino_cpu','npu','gpu')):
+        check_cancel(cancel);progress(index*24,f'동일 프레임 비교: {backend}')
         try:
-            detector=Detectors(dict(settings,backend='npu' if backend=='npu' else 'cpu',verify_npu=False))
+            detector=Detectors(dict(settings,backend=backend if backend in ('npu','gpu') else 'cpu',verify_npu=False))
             calls={};recorders={}
-            for attr,name in (('face','head_yolox.onnx'),('plate','plate_yolov9.onnx')):
+            for attr,name in detector.names.items():
                 session=getattr(detector,attr)
                 if session is not None:
                     if backend=='openvino_cpu':session=OpenVINOCPU(core,model_bytes(name))
@@ -62,7 +62,7 @@ def diagnose_image(image,settings,progress=lambda *a:None,cancel=None):
             report['runs'][backend]={'boxes':boxes,'seconds':time.monotonic()-started,'calls':calls}
             raw_runs[backend]=recorders
         except Exception as error:report['runs'][backend]={'error':str(error)}
-    for backend in ('openvino_cpu','npu'):
+    for backend in ('openvino_cpu','npu','gpu'):
         reference=report['runs']['ort_cpu'];candidate=report['runs'][backend]
         if 'boxes' in reference and 'boxes' in candidate:
             report['comparisons'][backend]={kind:compare_boxes(

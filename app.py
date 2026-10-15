@@ -38,10 +38,6 @@ QPushButton#primary {background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #F373
 QPushButton#primary:hover {background:#E06A1B;}
 QPushButton#primary:pressed {background:#C75E14;}
 QPushButton#primary:disabled {background:#FDEEDE;color:#94A3B8;}
-QPushButton#step {background:#1A2B4A;color:#FFFFFF;border:0;font-size:15px;font-weight:700;min-height:30px;min-width:120px;padding:8px 16px;}
-QPushButton#step:hover {background:#2A3F66;}
-QPushButton#step:pressed {background:#0F1B30;}
-QPushButton#step:disabled {background:#EEF2F7;color:#94A3B8;}
 QListWidget {background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:4px;}
 QListWidget::item {padding:7px;border-radius:6px;}
 QListWidget::item:hover {background:#F7F9FC;}
@@ -282,7 +278,7 @@ class Window(QMainWindow):
         self.toolbar=QWidget();bar=QHBoxLayout(self.toolbar);bar.setContentsMargins(0,0,0,0)
         bar.addWidget(button("＋ 영상 추가",self.add_files));bar.addWidget(button("프로젝트 열기",self.open_project))
         self.save_btn=button("프로젝트 저장",self.save_current);bar.addWidget(self.save_btn);bar.addStretch()
-        self.diagnose_btn=button("CPU / NPU 비교",self.run_diagnosis);bar.addWidget(self.diagnose_btn)
+        self.diagnose_btn=button("CPU / NPU / GPU 비교",self.run_diagnosis);bar.addWidget(self.diagnose_btn)
         self.analyze_btn=button("1. 선택 영상 분석",self.run_analysis,True);bar.addWidget(self.analyze_btn)
         self.batch_btn=button("전체 자동 처리",self.run_batch);bar.addWidget(self.batch_btn);layout.addWidget(self.toolbar)
         split=QSplitter(Qt.Horizontal);layout.addWidget(split,1)
@@ -293,10 +289,13 @@ class Window(QMainWindow):
         for title,canvas in [("원본 · 드래그하여 수동 영역 추가",self.original),("처리 미리보기",self.output)]:
             box=QVBoxLayout();label=QLabel(title);label.setObjectName("muted");box.addWidget(label);box.addWidget(canvas,1);views.addLayout(box,1)
         lv.addLayout(views,1)
-        play=QHBoxLayout();self.prev=button("◀  이전 프레임",lambda:self.step(-1));self.prev.setObjectName("step");play.addWidget(self.prev)
+        play=QHBoxLayout();self.prev=button("◀ 이전",lambda:self.step(-1));play.addWidget(self.prev)
         self.play=button("재생",self.toggle_play);play.addWidget(self.play)
-        self.next=button("다음 프레임  ▶",lambda:self.step(1));self.next.setObjectName("step");play.addWidget(self.next)
-        self.prev.setToolTip("한 프레임 뒤로 (← 키, Shift+← 10프레임)");self.next.setToolTip("한 프레임 앞으로 (→ 키, Shift+→ 10프레임)")
+        self.next=button("다음 ▶",lambda:self.step(1));play.addWidget(self.next)
+        for b in (self.prev,self.next):
+            # 꾹 누르고 있으면 0.3초 뒤부터 연속으로 넘긴다. 프레임 디코딩이 느리면 그 속도에 맞춰진다.
+            b.setAutoRepeat(True);b.setAutoRepeatDelay(300);b.setAutoRepeatInterval(33)
+        self.prev.setToolTip("한 프레임 뒤로 · 꾹 누르면 연속 이동 (← 키, Shift+← 10프레임)");self.next.setToolTip("한 프레임 앞으로 · 꾹 누르면 연속 이동 (→ 키, Shift+→ 10프레임)")
         for key,delta in [(Qt.Key_Left,-1),(Qt.Key_Right,1),(Qt.SHIFT|Qt.Key_Left,-10),(Qt.SHIFT|Qt.Key_Right,10)]:
             QShortcut(QKeySequence(key),self,lambda d=delta:self.step(d))
         self.slider=SeekSlider(Qt.Horizontal);self.slider.valueChanged.connect(self.goto);play.addWidget(self.slider,1)
@@ -313,14 +312,16 @@ class Window(QMainWindow):
         hint.setWordWrap(True);hint.setObjectName("muted");lv.addWidget(hint);split.addWidget(left)
         self.sidebar=QWidget();rv=QVBoxLayout(self.sidebar);rv.setContentsMargins(12,0,0,0);rv.setSpacing(10)
         detect=QGroupBox("자동 탐지 설정");dv=QVBoxLayout(detect)
-        self.backend=QComboBox();self.backend.addItems(["자동 · Intel NPU 우선 / CPU 대체", "CPU", "Intel NPU 전용 · 실패 시 중단"])
+        self.backend=QComboBox();self.backend.addItems(["자동 · NPU → Intel GPU → CPU 순으로 대체", "CPU", "Intel NPU 전용 · 실패 시 중단", "Intel GPU 전용 · 실패 시 중단"])
         dv.addWidget(self.backend)
+        self.model=QComboBox();self.model.addItems(["탐지 모델: 기본 · 빠름","탐지 모델: 고정밀 · 약 7배 연산 (NPU 미사용)","탐지 모델: 최고 정밀 · 약 18배 연산 (NPU 미사용)"])
+        self.model.setToolTip("고정밀: 머리 YOLOX-S + 번호판 YOLOv9-s\n최고 정밀: 머리 YOLOX-M + 번호판 YOLOv9-s\nCPU로 처리하면 매우 느려질 수 있습니다.\n고정밀·최고 정밀은 NPU에서 장치가 멈추는 문제가 있어 NPU를 쓰지 않습니다.\n자동 모드에서는 Intel GPU → CPU 순으로 처리합니다.");dv.addWidget(self.model)
         self.faces=QCheckBox("얼굴");self.faces.setChecked(True);self.plates=QCheckBox("차량 번호판");self.plates.setChecked(True)
         dh=QHBoxLayout();dh.addWidget(self.faces);dh.addWidget(self.plates);dv.addLayout(dh)
         self.detail=QCheckBox("작은 얼굴·번호판 추가 탐지 (처리시간 증가)");dv.addWidget(self.detail)
-        tip=QLabel("NPU는 AI 탐지에 사용 · 첫 분석은 모델 컴파일로 지연될 수 있음");tip.setObjectName("muted");tip.setWordWrap(True);dv.addWidget(tip);rv.addWidget(detect)
+        tip=QLabel("NPU / Intel GPU는 AI 탐지에 사용 · 첫 분석은 모델 컴파일로 지연될 수 있음");tip.setObjectName("muted");tip.setWordWrap(True);dv.addWidget(tip);rv.addWidget(detect)
         mask=QGroupBox("마스킹 설정");form=QFormLayout(mask)
-        self.style=QComboBox();self.style.addItems(["블러","모자이크","불투명 가리기"]);self.style.currentIndexChanged.connect(self.options_changed);form.addRow("처리 방식",self.style)
+        self.style=QComboBox();self.style.addItems(["블러","약한 블러 · 형태만","모자이크","불투명 가리기"]);self.style.setCurrentIndex(1);self.style.currentIndexChanged.connect(self.options_changed);form.addRow("처리 방식",self.style)
         self.margin=QDoubleSpinBox();self.margin.setRange(0,100);self.margin.setValue(18);self.margin.setSuffix(" %");self.margin.valueChanged.connect(self.options_changed);form.addRow("영역 여유 폭",self.margin);rv.addWidget(mask)
         manual=QGroupBox("수동 영역 · 프레임 구간");mv=QVBoxLayout(manual);times=QFormLayout()
         self.start=QSpinBox();self.end=QSpinBox();self.start_set=button("현재 프레임",lambda:self.start.setValue(self.index+1))
@@ -408,14 +409,14 @@ class Window(QMainWindow):
         except Exception as e:self.error(str(e))
         self.update_enabled()
 
-    def settings(self):return {"faces":self.faces.isChecked(),"plates":self.plates.isChecked(),"detail":self.detail.isChecked(),"backend":["auto","cpu","npu"][self.backend.currentIndex()]}
+    def settings(self):return {"faces":self.faces.isChecked(),"plates":self.plates.isChecked(),"detail":self.detail.isChecked(),"model":["fast","accurate","best"][self.model.currentIndex()],"backend":["auto","cpu","npu","gpu"][self.backend.currentIndex()]}
 
     def run_diagnosis(self):
         if self.raw is None:return
         from npu_diagnostics import diagnose_image
         image=self.raw.copy();settings=self.settings()
         def done(report):
-            path,_=QFileDialog.getSaveFileName(self,"CPU / NPU 비교 보고서 저장","npu-comparison.json","JSON (*.json)")
+            path,_=QFileDialog.getSaveFileName(self,"CPU / NPU / GPU 비교 보고서 저장","npu-comparison.json","JSON (*.json)")
             if path:
                 try:Path(path).write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
                 except Exception as error:self.error(str(error));return
@@ -425,10 +426,10 @@ class Window(QMainWindow):
                 else:lines.append(f"{backend}: 머리 {sum(x['kind']=='face' for x in run['boxes'])}개 / 번호판 {sum(x['kind']=='plate' for x in run['boxes'])}개")
             for backend,kinds in report['comparisons'].items():
                 lines.append(f"{backend} CPU 일치율: "+' / '.join(f"{k} {v['agreement']:.0%}" for k,v in kinds.items()))
-            self.status.setText("CPU / NPU 비교 완료")
-            QMessageBox.information(self,"CPU / NPU 비교",'\n'.join(lines))
+            self.status.setText("CPU / NPU / GPU 비교 완료")
+            QMessageBox.information(self,"CPU / NPU / GPU 비교",'\n'.join(lines))
         self.work(lambda progress,cancel:diagnose_image(image,settings,progress,cancel),done)
-    def options(self):return {"style":["blur","mosaic","solid"][self.style.currentIndex()],"margin":self.margin.value()/100,
+    def options(self):return {"style":["blur","blur_light","mosaic","solid"][self.style.currentIndex()],"margin":self.margin.value()/100,
                               "audio":self.audio.isChecked(),"watermark":self.watermark.isChecked(),"reviewed":self.reviewed.isChecked()}
 
     def run_analysis(self):
@@ -593,7 +594,7 @@ class Window(QMainWindow):
             self.files.blockSignals(True);self.files.setCurrentRow(self.queue.index(path));self.files.blockSignals(False)
             self.install_project(project)
             opts=project.get("export_options",{})
-            self.style.setCurrentIndex(["blur","mosaic","solid"].index(opts.get("style","blur")))
+            self.style.setCurrentIndex(["blur","blur_light","mosaic","solid"].index(opts.get("style","blur")))
             self.margin.setValue(opts.get("margin",.18)*100)
             self.audio.setChecked(opts.get("audio",False));self.watermark.setChecked(opts.get("watermark",True))
         self.work(lambda progress,cancel:load_project(p),done)

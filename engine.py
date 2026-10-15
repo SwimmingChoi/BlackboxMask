@@ -20,6 +20,17 @@ VERSION = "0.1.2"
 MODEL_HASHES = {
     "head_yolox.onnx": "2680679d07e432cc705a147b3990bd4c6ea240317805043646eabe44b839d8d4",
     "plate_yolov9.onnx": "c3c1026ca7d0585dd88084d68182dd897113712fa734ae1557ca70174440c076",
+    "head_yolox_s.onnx": "21e011417e6f99900f1d6ad123a68bd8fb39f76cb740054d007367b9de0c33d0",
+    "head_yolox_m.onnx": "e5f8113083407c20b02b6d848106c149edc93337e8efc8d7a15be7aed6d2d085",
+    "plate_yolov9_s.onnx": "2b878b38d9aa07b6ddc3ea75c4ffcb39869bc5c218e0a14002f60ab2f7b0be9a",
+}
+# NPU에 올리면 장치가 멈춰(DEVICE_LOST) 재부팅 전까지 NPU가 사라지는 모델 조합. 자동 모드는 Intel GPU → CPU로 처리한다.
+NPU_UNSAFE_MODELS = {"accurate", "best"}
+# 탐지 모델 조합: (머리 모델, 번호판 모델, 번호판 입력 크기). 같은 계열의 큰 모델이라 디코더는 공통이다.
+MODEL_SETS = {
+    "fast": ("head_yolox.onnx", "plate_yolov9.onnx", 640),
+    "accurate": ("head_yolox_s.onnx", "plate_yolov9_s.onnx", 608),
+    "best": ("head_yolox_m.onnx", "plate_yolov9_s.onnx", 608),
 }
 
 
@@ -96,12 +107,18 @@ def iou(a, b):
 
 
 def model_session(name, backend="cpu"):
-    if backend not in ("cpu", "auto", "npu"):
+    if backend not in ("cpu", "auto", "npu", "gpu", "auto_gpu"):
         raise ValueError(f"지원하지 않는 추론 장치: {backend}")
     data = model_bytes(name)
     if backend != "cpu":
         from inference import NPUSession
-        return NPUSession(name, data, lambda: model_session(name, "cpu"), strict=backend == "npu")
+        cpu = lambda: model_session(name, "cpu")
+        if backend in ("gpu", "auto_gpu"):
+            return NPUSession(name, data, cpu, strict=backend == "gpu", kind="GPU")
+        if backend == "npu":
+            return NPUSession(name, data, cpu, strict=True)
+        # 자동: NPU → Intel GPU → CPU.
+        return NPUSession(name, data, lambda: NPUSession(name, data, cpu, kind="GPU"))
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = max(1, min(4, os.cpu_count() or 2))
     # 두 모델이 프레임마다 번갈아 실행되므로, 쉬는 모델의 스레드가 공회전하며 CPU를 잡지 않게 한다.
@@ -114,8 +131,19 @@ class Detectors:
         self.settings = settings
         cv2.setNumThreads(max(1, min(4, os.cpu_count() or 2)))
         backend = settings.get("backend", "cpu")
-        self.face = model_session("head_yolox.onnx", backend) if settings.get("faces", True) else None
-        self.plate = model_session("plate_yolov9.onnx", backend) if settings.get("plates", True) else None
+        if settings.get("model", "fast") not in MODEL_SETS:
+            raise ValueError(f"지원하지 않는 탐지 모델: {settings.get('model')}")
+        head, plate, self.plate_size = MODEL_SETS[settings.get("model", "fast")]
+        if settings.get("model", "fast") in NPU_UNSAFE_MODELS:
+            # Intel AI Boost NPU에서 큰 머리 모델 추론 중 장치가 멈추고(DEVICE_LOST) 재부팅 전까지 NPU가 사라졌다.
+            # 시도만 해도 기본 모델까지 NPU를 못 쓰게 되므로 NPU에는 아예 올리지 않는다.
+            if backend == "npu":
+                raise ValueError("고정밀·최고 정밀 모델은 Intel NPU에서 장치가 멈추는 문제(DEVICE_LOST)가 있어 NPU로 실행하지 않습니다.\n"
+                                 "추론 장치를 [자동] 또는 [Intel GPU 전용]으로 선택하세요. NPU는 기본 모델에 사용하세요.")
+            if backend == "auto":backend = "auto_gpu"
+        self.names = {"face": head, "plate": plate}
+        self.face = model_session(head, backend) if settings.get("faces", True) else None
+        self.plate = model_session(plate, backend) if settings.get("plates", True) else None
         self.grids = {}
         self.audit_reference = None
         self.audit_frames = 0
@@ -127,9 +155,10 @@ class Detectors:
 
     def _plate(self, image, ox=0, oy=0):
         h, w = image.shape[:2]
-        ratio = min(640/w, 640/h)
+        size = self.plate_size
+        ratio = min(size/w, size/h)
         nw, nh = round(w*ratio), round(h*ratio)
-        dw, dh = (640-nw)/2, (640-nh)/2
+        dw, dh = (size-nw)/2, (size-nh)/2
         padded = cv2.copyMakeBorder(cv2.resize(image, (nw, nh)), round(dh-.1), round(dh+.1),
                                     round(dw-.1), round(dw+.1), cv2.BORDER_CONSTANT, value=(114,114,114))
         tensor = np.ascontiguousarray(padded[:, :, ::-1].transpose(2,0,1)[None], dtype=np.float32)/255
@@ -193,7 +222,7 @@ class Detectors:
     def detect(self, image):
         found = self._detect_impl(image)
         self.audit_frames += 1
-        npu_active=any(hasattr(s,'status') and s.status()['device']=='Intel NPU' for s in (self.face,self.plate) if s is not None)
+        npu_active=any(hasattr(s,'status') and s.status()['device']!='CPU' for s in (self.face,self.plate) if s is not None)
         if npu_active and self.settings.get('verify_npu',True):
             if self.audit_frames <= 3 or self.audit_frames % 60 == 0:
                 if self.audit_reference is None:
@@ -202,11 +231,12 @@ class Detectors:
                 from detection_checks import compare_boxes
                 for kind,attr in (('face','face'),('plate','plate')):
                     session=getattr(self,attr)
-                    if session is None or not hasattr(session,'status') or session.status()['device']!='Intel NPU':continue
+                    if session is None or not hasattr(session,'status') or session.status()['device']=='CPU':continue
+                    device=session.status()['device']
                     cpu_boxes=[x for x in reference if x['kind']==kind]
                     comparison=compare_boxes(cpu_boxes,[x for x in found if x['kind']==kind])
                     if comparison['agreement']<.5:
-                        reason=f"NPU/CPU 탐지 불일치 ({kind}, 프레임 {self.audit_frames}): CPU {comparison['reference_count']}개 / NPU {comparison['candidate_count']}개 / 일치 {comparison['agreement']:.0%}"
+                        reason=f"{device}/CPU 탐지 불일치 ({kind}, 프레임 {self.audit_frames}): CPU {comparison['reference_count']}개 / {device} {comparison['candidate_count']}개 / 일치 {comparison['agreement']:.0%}"
                         self.audit_log.append(dict(comparison,kind=kind,frame=self.audit_frames))
                         session._fallback(RuntimeError(reason))
                         found=[x for x in found if x['kind']!=kind]+cpu_boxes
@@ -356,6 +386,10 @@ def apply_masks(image, boxes, style="blur", margin=.18):
         elif style=="mosaic":
             tiny = cv2.resize(roi,(max(1,(x2-x1)//24),max(1,(y2-y1)//24)),interpolation=cv2.INTER_AREA)
             roi[:] = cv2.resize(tiny,(x2-x1,y2-y1),interpolation=cv2.INTER_NEAREST)
+        elif style=="blur_light":
+            # Outline only. Plates/manual regions need more blur than heads to keep characters unreadable.
+            sigma = max(2., min(x2-x1,y2-y1)*(.08 if item.get("kind")=="face" else .15))
+            roi[:] = cv2.GaussianBlur(roi,(0,0),sigmaX=sigma,sigmaY=sigma)
         else:
             # Scale blur with region size; strongest privacy uses solid fill.
             sigma = max(9., min(x2-x1,y2-y1)*.35)

@@ -23,6 +23,10 @@ def validate_bootstrap(data):
 
 def install():
     print("Python:", sys.executable, flush=True)
+    if importlib.util.find_spec("openvino") is not None:
+        # Prebundled runtimes already contain OpenVINO; avoid any network access.
+        print("OpenVINO is already installed in the bundled runtime. Nothing to download.", flush=True)
+        return
     wheels = ROOT / "npu-wheels"
     offline = wheels.is_dir() and any(wheels.glob("*.whl"))
     if offline:

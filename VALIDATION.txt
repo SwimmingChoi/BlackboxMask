@@ -1,0 +1,76 @@
+Blackbox Mask 0.1 validation — 2026-09-22
+
+Executed on Linux x86_64 with Python 3.12:
+PASS 11 automated tests (unittest, 0.385 seconds in the final engine run):
+- cancellation preserves an existing destination and removes partial output
+- exclusions and manual masks
+- VFR frame timestamps, final video duration, audio on/off, source hash unchanged
+- manual temporal interpolation and range bounds
+- blur, mosaic and solid masks do not alter pixels outside the requested area before encoding
+- preview resolves the requested decoded frame
+- project reload and changed-source rejection
+- source overwrite prevention
+- real YuNet and YOLOv9 ONNX model execution
+- detector-to-tracker association over the fixture
+- short-gap track persistence and expiry
+
+Additional checks:
+- Public OpenCV face fixture: YuNet returned a positive face detection.
+- Qt offscreen GUI opened at 1366 x 768; export control remains visible.
+- GUI manual region creation and a second temporal keyframe exercised.
+- Background analysis worker completion and UI re-enable exercised.
+- Windows launcher compiled using Zig 0.14.1 to x64 PE32+ GUI executable.
+- Static imports inspected for 65 relevant Windows native files.
+  Imports resolve to bundled DLL names or Windows system/API-set DLLs.
+
+NOT VERIFIED:
+- Actual execution, DLL loader behavior, or code signing on Windows.
+- Real Korean license-plate detection accuracy.
+- Dashcam manufacturer proprietary containers, multi-channel or HDR.
+- End-to-end throughput or privacy recall on representative user videos.
+- Setup.exe installer (the supplied package is a portable folder).
+
+These checks establish a prototype, not production/privacy certification.
+
+
+0.1.1 regression validation — 2026-09-22
+PASS: all 15 automated tests.
+PASS: Korean model directory; both native model loaders receive memory buffers.
+PASS: missing/corrupt model errors differentiated.
+PASS: 90-degree MP4 preview matches FFmpeg autorotation.
+PASS: rotated output has correct dimensions and frame count, with no double rotation.
+Windows execution remains unverified in this environment.
+
+
+0.1.2 face (head) model replacement — 2026-09-30
+Change: YuNet face model replaced by PINTO model zoo 445 YOLOX-Nano, head class
+(models/head_yolox.onnx, Apache-2.0). Both models now run in ONNX Runtime with
+thread spinning disabled. The license-plate model is unchanged.
+
+PASS: all 17 automated tests (Linux, Python 3.12, onnxruntime 1.22.1, OpenCV 4.11.0.86).
+New test: head output decoding, source-coordinate scaling, class selection, duplicate removal.
+
+Comparison on 323 frames (every 15th frame of 4 user dashcam videos, 720p-1440p, daytime).
+Reference labels were made by eye: every candidate box from 18 detector configurations was
+judged twice independently; disagreements were re-judged or ignored. 648 visible faces.
+"Covered" = the mask (box + 18% margin) covers at least 80% of the face.
+  0.1.1 YuNet, threshold 0.3 : 287 of 648 faces covered (44.3%), 362 false boxes
+  0.1.2 head,  threshold 0.3 : 583 of 648 faces covered (90.0%),  99 false boxes
+False boxes per video (0.1.1 -> 0.1.2): 720p 8 -> 19, 1080p rear 78 -> 16,
+1440p event 25 -> 15, 1440p street 251 -> 49.
+The 720p video has no visible faces; its false boxes increased. They are mostly
+traffic lights and round road signs. Traffic mirrors are also still detected.
+Heads seen from behind are now masked as well (not counted as false boxes).
+License plates: 92 of 341 covered (27.0%), 0 false boxes, identical before and after.
+
+Full analyze() time on a 4-vCPU Linux VM (decode + detection + tracking):
+  1440p HEVC, 600 frames: 144.1 -> 178.1 ms/frame (+24%)
+  720p, 928 frames:       139.5 -> 163.4 ms/frame (+17%)
+
+NOT VERIFIED:
+- Night, rain, tunnel or heavily tinted-glass footage (the sample videos are daytime).
+- Faces missed by every evaluated detector are not in the reference labels,
+  so the true coverage is lower than the figures above.
+- Execution or timing on Windows.
+- BlackboxMask.exe and runtime/ were not rebuilt; BUILD_MANIFEST.json hashes were
+  updated only for the files changed in this version.

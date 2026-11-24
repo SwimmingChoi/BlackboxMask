@@ -5,7 +5,11 @@ Blackbox Mask 0.1.2 — Windows 64비트 시제품
 NPU 설치/사용 방법과 검증 한계는 NPU_README_KO.txt를 확인하세요.
 아래 CPU 전용 및 검증 기록은 원래 0.1.2 배포본 기준입니다.
 
-1. 실행
+1. 설치와 실행
+[설치 프로그램] BlackboxMask-0.1.2-Setup.exe를 실행해 안내에 따라 설치합니다.
+  관리자 권한 없이 사용자 폴더(%LOCALAPPDATA%\Programs\BlackboxMask)에 설치되며,
+  시작 메뉴·바탕화면 바로가기로 실행합니다. 제거는 Windows [설정 > 앱] 또는 시작 메뉴에서 합니다.
+[ZIP 배포본] 아래 방법을 따릅니다.
 이 ZIP의 모든 파일을 한 폴더에 압축 해제한 다음 BlackboxMask.exe를 더블클릭합니다.
 EXE만 따로 옮기지 마세요. runtime, models, app.py 등 나머지 파일이 함께 필요합니다.
 Python 설치와 인터넷 연결이 필요 없도록 Windows 실행 환경과 AI 모델을 포함했습니다.
@@ -102,6 +106,7 @@ app.py: 사용자 화면 / engine.py: 영상·AI 처리 / launch.py: 시작과 �
 models/: AI 모델 / runtime/: Windows 실행 환경 / tests/: 처리 테스트
 build/launcher.c: 이 패키지 실행기의 전체 소스
 build/build_windows.cmd: Windows Python 3.12 환경에서 PyInstaller로 대체 배포본 생성
+build/installer.nsi, build/build_installer.cmd/.sh: NSIS 설치 프로그램(Setup.exe) 생성
 build/package_windows.py: 공식 Windows 런타임과 Windows wheel을 이용한 패키징 기록
 BUILD_MANIFEST.json: 구성 파일과 다운로드 원본의 SHA-256
 THIRD_PARTY_NOTICES.md 및 각 runtime 패키지의 licenses/에는 타사 고지를 보존했습니다.
